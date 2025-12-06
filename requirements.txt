@@ -6,3 +6,4 @@ yfinance
 plotly
 python-dotenv
 matplotlib
+deprecated
