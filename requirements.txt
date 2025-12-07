@@ -7,3 +7,5 @@ plotly
 python-dotenv
 matplotlib
 deprecated
+numpy-financial
+
