@@ -50,8 +50,44 @@ class DataFetcher:
             self.logger.info("Fetching scheme codes for fund names...")
             self._scheme_codes = self._fetch_scheme_codes() #fetches scheme codes if not cached
         return list(self._scheme_codes.values()) if self._scheme_codes else [] #if not empty return list, else []
+    
+    from datetime import timedelta
 
-    def get_historical_nav(self, fund_name, date): 
+    def get_nav(self, scheme_code, fund_name, purchase_date):
+        try:
+            fallback_days = [0, 1, 2, 3, 5, 7, 10, 15, 30, 45, 60]
+
+            for days in fallback_days:
+                fetch_date = purchase_date - timedelta(days=days)
+
+                nav_list = self.mf_toolkit.get_scheme_historical_nav(
+                    scheme_code, fetch_date, fetch_date
+                )
+
+                if nav_list and isinstance(nav_list, list):
+                    nav_entry = nav_list[0]
+
+                    nav = nav_entry.get("nav")
+                    if nav and float(nav) > 0:
+                        self.logger.info(
+                            f"Fetched NAV for {fund_name} using date {fetch_date}"
+                        )
+                        return float(nav)
+
+            # If nothing worked
+            self.logger.error(
+                f"Failed NAV fetch for {fund_name} for original date {purchase_date}"
+            )
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                f"Error fetching NAV for {fund_name} on {purchase_date}: {e}"
+            )
+            return None
+
+
+    '''def get_historical_nav(self, fund_name, date): 
         try:
             if self._scheme_codes is None: #checks for cached scheme codes
                 self.logger.info("Fetching scheme codes for NAV retrieval...")
@@ -79,7 +115,7 @@ class DataFetcher:
             return None
         except Exception as e:
             self.logger.error(f"Error fetching NAV for {fund_name} on {date}: {e}")
-            return None
+            return None'''
 
     def get_stock_data(self, symbol, date): #this fetches stock data for a given symbol and date
         try:
