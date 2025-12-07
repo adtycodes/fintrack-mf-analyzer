@@ -53,7 +53,7 @@ class DataFetcher:
     
     from datetime import timedelta
 
-    def get_nav(self, scheme_code, fund_name, purchase_date):
+    def get_historical_nav(self, fund_name, purchase_date, scheme_code):
         try:
             fallback_days = [0, 1, 2, 3, 5, 7, 10, 15, 30, 45, 60]
 
