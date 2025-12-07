@@ -7,33 +7,38 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date
 from data_fetcher import DataFetcher
+from portfolio_analyzer import PortfolioAnalyzer
 
 @st.cache_data(ttl=86400) #Fetching list of mutual fund names
 def fetch_fund_names():
     fetcher = DataFetcher()
     return fetcher.get_all_fund_names()
     
+DEFAULT_DATE = date(2000, 1, 1)
 def main():
+
     st.set_page_config( #1. Configuration
-        page_title = "FinTrack - Mutual Fund Portfolio Tracker",
+        page_title = "FinTrack - Investments Analyzer & Forecaster",
         layout = "wide",
     )
+
     col1, col2 = st.columns([4, 1])
     with col1:
-        st.title("FinTrack - Mutual Fund Portfolio Tracker")
+        st.title("FinTrack - Investments Analyzer & Forecaster")
     with col2:
         if st.button("🔄 Refresh fund list"):
             fetch_fund_names.clear()  # clears cache
             st.success("Fund list refreshed!")
             st.rerun()
 
-    st.markdown("Track and analyze your mutual fund investments with ease.")
+    st.markdown("Powerful tool for keeping track, analyzing and forecasting your investments in mutual funds and stocks.")
     st.markdown("Note: This is a work in progress. The full portfolio analysis feature is currently under development.")
 
     if 'portfolio' not in st.session_state: #3. Checking Session State
         st.session_state.portfolio = []
 
     fund_name = fetch_fund_names()
+    
     asset_type = st.radio("Select Asset Type", ["Stock", "Mutual Fund"], horizontal=True)
     inv_type = st.radio("Select Investment Type", ["Lumpsum", "SIP"], horizontal=True)
     with st.form(key='portfolio_form', clear_on_submit=True): #4. Gathering MF/Stock Details
@@ -50,12 +55,14 @@ def main():
                 amount_invested = st.number_input("Amount Invested (₹)", min_value=1.0, step=1000.0)
             
         with col2:
-            purchase_date = st.date_input("Date of Purchase: (In case of SIP, use the date of the first installment)", value=None, max_value=date.today())
+            purchase_date = st.date_input("Date of Purchase (for SIP: date of first installment)", value=DEFAULT_DATE, max_value=date.today())
         submitted = st.form_submit_button("Add to Portfolio")
 
     fetcher = DataFetcher()  # Initialize the data fetcher
     if submitted:
-        if not asset_name or not amount_invested or not purchase_date:
+        if purchase_date == DEFAULT_DATE:
+            st.warning("Please select a real purchase date.")
+        elif not asset_name or not amount_invested:
             st.warning("Please fill out all the fields.")
         else:
             with st.spinner(f"Validating {asset_name}..."):
@@ -110,8 +117,73 @@ def main():
     # --- The Main Analyze Button ---
     if st.session_state.portfolio:
         if st.button("Analyze Full Portfolio"):
-            # The analysis logic will go here
-            st.info("Analysis logic is the next big step!")
+            with st.spinner("Analyzing full portfolio..."):
+                fetcher = DataFetcher()
+                analyzer = PortfolioAnalyzer(fetcher)
+                results = analyzer.analyze_portfolio(st.session_state.portfolio)
+                st.session_state.analysis_results = results
+
+            st.success("Analysis complete!")
+            st.rerun()
+    
+    results = st.session_state.get("analysis_results")
+    if results:
+        st.subheader("📈 Portfolio Summary")
+
+        summary = results["summary"]
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("Total Investment", f"₹{summary['Total Invested']:,.2f}")
+
+        col2.metric(
+            "Current Value",
+            f"₹{summary['Total Current Value']:,.2f}",
+            delta=f"₹{summary['Total Gain/Loss']:,.2f}",
+        )
+
+        col3.metric(
+            "Overall Portfolio XIRR",
+            f"{summary.get('Portfolio XIRR', 'N/A')}%",
+        )
+
+        st.subheader("📄 Detailed Breakdown")
+        details_df = pd.DataFrame(results["details"])
+        details_df["error"] = details_df.get("error", None)
+
+        display_cols = [
+            "Type",
+            "Name",
+            "Amount Invested",
+            "Total Invested",
+            "Purchase Price",
+            "Current Price",
+            "Units/Shares",
+            "Current Value",
+            "Gain/Loss",
+            "Percentage Return",
+            "CAGR",
+            "XIRR",
+            "error",
+        ]
+
+        existing_cols = [c for c in display_cols if c in details_df.columns]
+
+        money_cols = [
+            "Amount Invested",
+            "Total Invested",
+            "Purchase Price",
+            "Current Price",
+            "Current Value",
+            "Gain/Loss",
+        ]
+
+        for col in money_cols:
+            if col in details_df.columns:
+                details_df[col] = details_df[col].apply(
+                    lambda x: f"₹{x:,.2f}" if pd.notnull(x) else "N/A"
+                )
+
+        st.dataframe(details_df[existing_cols], use_container_width=True)
 
     #7. Analysis 
 if __name__ == "__main__":

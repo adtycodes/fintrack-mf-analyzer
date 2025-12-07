@@ -15,22 +15,24 @@ class DataFetcher:
     # In data_fetcher.py, inside the DataFetcher class
 
     def is_asset_valid(self, asset_type, asset_name):
-        try:
-            self.logger.info(f"Validating asset: {asset_type}: {asset_name}")
-            if asset_type == "Mutual Fund":
-                return True
-            elif asset_type == "Stock":
-                self.logger.info(f"Validating stock ticker: {asset_name}")
-                stock = yf.Ticker(asset_name)
-                if stock.info and 'currency' in stock.info:
-                    self.logger.info(f"Stock {asset_name} is valid.")
+        max_range = 3
+        for i in range(max_range):
+            try:
+                self.logger.info(f"Validating asset: {asset_type}: {asset_name}")
+                if asset_type == "Mutual Fund":
                     return True
-                else:
-                    self.logger.warning(f"Stock {asset_name} is not valid.")
-                    return False
-        except Exception as e:
-            self.logger.error(f"Error validating asset {asset_name}: {e}")
-            return False
+                elif asset_type == "Stock":
+                    self.logger.info(f"Validating stock ticker: {asset_name}")
+                    stock = yf.Ticker(asset_name)
+                    if stock.info and 'currency' in stock.info:
+                        self.logger.info(f"Stock {asset_name} is valid.")
+                        return True
+                    else:
+                        self.logger.warning(f"Stock {asset_name} is not valid.")
+                        return False
+            except Exception as e:
+                self.logger.error(f"Error validating asset {asset_name}: {e}")
+                return False
 
     def _fetch_scheme_codes(self):
         try:
@@ -49,7 +51,7 @@ class DataFetcher:
             self._scheme_codes = self._fetch_scheme_codes() #fetches scheme codes if not cached
         return list(self._scheme_codes.values()) if self._scheme_codes else [] #if not empty return list, else []
 
-    def get_fund_nav(self, fund_name, date): 
+    def get_historical_nav(self, fund_name, date): 
         try:
             if self._scheme_codes is None: #checks for cached scheme codes
                 self.logger.info("Fetching scheme codes for NAV retrieval...")
