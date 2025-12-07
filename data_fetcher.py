@@ -53,8 +53,12 @@ class DataFetcher:
     
     from datetime import timedelta
 
-    def get_historical_nav(self, fund_name, purchase_date, scheme_code):
+    def get_historical_nav(self, fund_name, purchase_date):
         try:
+            scheme_code = self.get_scheme_code(fund_name)
+            if not scheme_code:
+                self.logger.error(f"Scheme code not found for {fund_name}")
+                return None
             fallback_days = [0, 1, 2, 3, 5, 7, 10, 15, 30, 45, 60]
 
             for days in fallback_days:
