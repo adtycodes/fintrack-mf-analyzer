@@ -4,14 +4,14 @@ import mftool as mf
 import yfinance as yf
 import pandas as pd
 from datetime import date, timedelta
-import logging  # used to log errors and info messages
+import logging 
 
 class DataFetcher:
-    def __init__(self):  # this line sets up the mftool instance and initializes logging
-        self.mf_toolkit = mf.Mftool()  # this line initializes the mftool instance
-        self._scheme_codes = None  # this line starts caching process with initially None
+    def __init__(self):
+        self.mf_toolkit = mf.Mftool()
+        self._scheme_codes = None
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-        self.logger = logging.getLogger(__name__)  # this line sets up the logger for this class, setting up the format
+        self.logger = logging.getLogger(__name__)
 
     def is_asset_valid(self, asset_type, asset_name):
         max_range = 3
@@ -19,7 +19,7 @@ class DataFetcher:
             try:
                 self.logger.info(f"Validating asset: {asset_type}: {asset_name}")
                 if asset_type == "Mutual Fund":
-                    return True
+                    return True 
                 elif asset_type == "Stock":
                     self.logger.info(f"Validating stock ticker: {asset_name}")
                     stock = yf.Ticker(asset_name)
@@ -36,23 +36,21 @@ class DataFetcher:
     def _fetch_scheme_codes(self):
         try:
             self.logger.info("Fetching scheme codes...")
-            scheme_codes = self.mf_toolkit.get_scheme_codes()  # attains the scheme codes from mftool
+            scheme_codes = self.mf_toolkit.get_scheme_codes()
             if not scheme_codes:
-                raise ValueError("No scheme codes found.")  # if no scheme codes are found, it raises an error
+                raise ValueError("No scheme codes found.")
             return scheme_codes
         except Exception as e:
             self.logger.error(f"Error fetching scheme codes: {e}")
             return {}
 
     def get_all_fund_names(self):
-        if self._scheme_codes is None:  # checks for cached scheme codes
+        if self._scheme_codes is None:
             self.logger.info("Fetching scheme codes for fund names...")
-            self._scheme_codes = self._fetch_scheme_codes()  # fetches scheme codes if not cached
-        return list(self._scheme_codes.values()) if self._scheme_codes else []  # if not empty return list, else []
+            self._scheme_codes = self._fetch_scheme_codes()
+        return list(self._scheme_codes.values()) if self._scheme_codes else []
 
-    # ------------------------------------------------------
-    # FIX 1: ADD MISSING get_scheme_code (ABSOLUTELY REQUIRED)
-    # ------------------------------------------------------
+    # FIX 1: get_scheme_code centralized
     def get_scheme_code(self, fund_name):
         try:
             if self._scheme_codes is None:
@@ -69,9 +67,7 @@ class DataFetcher:
             self.logger.error(f"Error fetching scheme code for {fund_name}: {e}")
             return None
 
-    # ------------------------------------------------------
-    # FIX 2: corrected get_historical_nav to use get_scheme_code
-    # ------------------------------------------------------
+    # FIX 2: get_historical_nav for Lumpsum (with fallbacks)
     def get_historical_nav(self, fund_name, purchase_date):
         try:
             scheme_code = self.get_scheme_code(fund_name)
@@ -83,9 +79,10 @@ class DataFetcher:
 
             for days in fallback_days:
                 fetch_date = purchase_date - timedelta(days=days)
+                fetch_date_str = fetch_date.strftime("%d-%m-%Y")
 
                 nav_list = self.mf_toolkit.get_scheme_historical_nav(
-                    scheme_code, fetch_date, fetch_date
+                    scheme_code, fetch_date_str, fetch_date_str
                 )
 
                 if nav_list and isinstance(nav_list, list):
@@ -94,7 +91,7 @@ class DataFetcher:
 
                     if nav and float(nav) > 0:
                         self.logger.info(
-                            f"Fetched NAV for {fund_name} using date {fetch_date}"
+                            f"Fetched NAV for {fund_name} using date {fetch_date_str}"
                         )
                         return float(nav)
 
@@ -109,6 +106,41 @@ class DataFetcher:
             )
             return None
 
+    # FIX 3a: New method for efficient batch fetching for SIP
+    def get_nav_range(self, fund_name, start_date, end_date):
+        scheme_code = self.get_scheme_code(fund_name)
+        if not scheme_code:
+            self.logger.error(f"Scheme code not found for {fund_name}")
+            return {}
+
+        try:
+            start_str = start_date.strftime("%d-%m-%Y")
+            end_str = end_date.strftime("%d-%m-%Y")
+            
+            self.logger.info(f"Fetching NAV range for {fund_name} from {start_str} to {end_str}")
+            
+            nav_data = self.mf_toolkit.get_scheme_historical_nav(
+                scheme_code, start_str, end_str
+            )
+
+            nav_dict = {}
+            if nav_data and isinstance(nav_data, list):
+                for item in nav_data:
+                    try:
+                        # mftool returns 'date' in YYYY-MM-DD format, convert to date object
+                        nav_date = date.fromisoformat(item["date"]) 
+                        nav = float(item["nav"])
+                        if nav > 0:
+                            nav_dict[nav_date] = nav
+                    except (ValueError, KeyError, TypeError) as e:
+                        self.logger.warning(f"Skipping invalid NAV entry: {item} due to {e}")
+
+            self.logger.info(f"Fetched {len(nav_dict)} NAV entries for {fund_name}.")
+            return nav_dict
+        except Exception as e:
+            self.logger.error(f"Error fetching NAV range for {fund_name}: {e}")
+            return {}
+
     def get_stock_data(self, symbol, date):
         try:
             start_date = date
@@ -122,18 +154,12 @@ class DataFetcher:
             self.logger.error(f"Error fetching stock data for {symbol}: {e}")
             return pd.DataFrame()
 
+    # FIX: Corrected get_current_price (fixed the issue in your screenshot)
     def get_current_price(self, asset_type, asset_name):
         try:
             if asset_type == "Mutual Fund":
-                if self._scheme_codes is None:
-                    self._scheme_codes = self._fetch_scheme_codes()
-
-                scheme_code = None
-                for code, name in self._scheme_codes.items():
-                    if name.lower().strip() == asset_name.lower().strip():
-                        scheme_code = code
-                        break
-
+                scheme_code = self.get_scheme_code(asset_name) 
+                
                 if scheme_code:
                     details = self.mf_toolkit.get_scheme_details(scheme_code)
                     nav = (
@@ -141,10 +167,20 @@ class DataFetcher:
                         or details.get("scheme_nav")
                         or details.get("last_nav")
                     )
-                if nav:
-                    return float(nav)
-                self.logger.error(f"NAV not found in scheme details for {asset_name}: {details}")
-                return None
+                    
+                    if nav is not None and str(nav).strip() and float(nav) > 0:
+                        self.logger.info(f"Successfully fetched current NAV for {asset_name}: {nav}")
+                        return float(nav)
+                        
+                    self.logger.error(
+                        f"NAV not found in scheme details for {asset_name} (Code: {scheme_code}). "
+                        f"Details keys: {list(details.keys()) if isinstance(details, dict) else 'N/A'}"
+                    )
+                    return None
+                else:
+                    self.logger.error(f"Scheme code lookup failed for Mutual Fund: {asset_name}")
+                    return None
+
 
             elif asset_type == "Stock":
                 ticker = yf.Ticker(asset_name)
