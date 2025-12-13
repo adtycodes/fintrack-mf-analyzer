@@ -1,190 +1,198 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import mftool as mf
-import yfinance as yf
-import plotly.express as px
-import plotly.graph_objects as go
 from datetime import date
 from data_fetcher import DataFetcher
 from portfolio_analyzer import PortfolioAnalyzer
+from storage import save_portfolio, load_portfolio
 
-@st.cache_data(ttl=86400) #Fetching list of mutual fund names
+
+@st.cache_data(ttl=86400)
 def fetch_fund_names():
     fetcher = DataFetcher()
     return fetcher.get_all_fund_names()
-    
-DEFAULT_DATE = date(2000, 1, 1)
-def main():
 
-    st.set_page_config( #1. Configuration
-        page_title = "FinTrack - Investments Analyzer & Forecaster",
-        layout = "wide",
+
+DEFAULT_DATE = date(2000, 1, 1)
+
+
+def main():
+    st.set_page_config(
+        page_title="FinTrack - Investments Analyzer & Forecaster",
+        layout="wide",
     )
 
+    # ---------------- HEADER ----------------
     col1, col2 = st.columns([4, 1])
     with col1:
         st.title("FinTrack - Investments Analyzer & Forecaster")
     with col2:
         if st.button("🔄 Refresh fund list"):
-            fetch_fund_names.clear()  # clears cache
+            fetch_fund_names.clear()
             st.success("Fund list refreshed!")
             st.rerun()
 
-    st.markdown("Powerful tool for keeping track, analyzing and forecasting your investments in mutual funds and stocks.")
-    st.markdown("Note: This is a work in progress. The full portfolio analysis feature is currently under development.")
+    st.markdown(
+        "Track and analyze your investments in **Mutual Funds and Stocks**.\n\n"
+        "**If market data is unavailable, you can still proceed by entering NAV or Units manually.**"
+    )
 
-    if 'portfolio' not in st.session_state: #3. Checking Session State
-        st.session_state.portfolio = []
+    # ---------------- LOAD PORTFOLIO ----------------
+    if "portfolio" not in st.session_state:
+        st.session_state.portfolio = load_portfolio()
 
-    fund_name = fetch_fund_names()
-    
+    fetcher = DataFetcher()
+    fund_names = fetch_fund_names()
+
+    # ---------------- INPUT ----------------
     asset_type = st.radio("Select Asset Type", ["Stock", "Mutual Fund"], horizontal=True)
     inv_type = st.radio("Select Investment Type", ["Lumpsum", "SIP"], horizontal=True)
-    with st.form(key='portfolio_form', clear_on_submit=True): #4. Gathering MF/Stock Details
-        st.subheader("Add to Portfolio")
+
+    with st.form("portfolio_form", clear_on_submit=True):
+        st.subheader("➕ Add Investment")
+
         if asset_type == "Stock":
-            asset_name = st.text_input("Stock Ticker", help="e.g., RELIANCE.NS for NSE stocks")
-        else: # Mutual Fund
-            asset_name = st.selectbox("Search and Select Mutual Fund", options=fund_name, help="Select a mutual fund from the list")
+            asset_name = st.text_input("Stock Ticker (e.g. RELIANCE.NS)")
+        else:
+            asset_name = st.selectbox("Select Mutual Fund", fund_names)
+
         col1, col2 = st.columns(2)
         with col1:
             if inv_type == "SIP":
-                amount_invested = st.number_input("Monthly SIP Amount (₹)", min_value=500.0, step=100.0, help="Minimum ₹500 for SIP")
-            else: 
-                amount_invested = st.number_input("Amount Invested (₹)", min_value=1.0, step=1000.0)
-            
+                amount_invested = st.number_input(
+                    "Monthly SIP Amount (₹)", min_value=500.0, step=100.0
+                )
+            else:
+                amount_invested = st.number_input(
+                    "Amount Invested (₹)", min_value=1.0, step=1000.0
+                )
+
         with col2:
-            purchase_date = st.date_input("Date of Purchase (for SIP: date of first installment)", value=DEFAULT_DATE, max_value=date.today())
+            purchase_date = st.date_input(
+                "Purchase Date (or SIP start date)",
+                value=DEFAULT_DATE,
+                max_value=date.today(),
+            )
+
         submitted = st.form_submit_button("Add to Portfolio")
 
-    fetcher = DataFetcher()  # Initialize the data fetcher
+    # ---------------- ADD ASSET ----------------
     if submitted:
         if purchase_date == DEFAULT_DATE:
-            st.warning("Please select a real purchase date.")
-        elif not asset_name or not amount_invested:
-            st.warning("Please fill out all the fields.")
-        else:
-            with st.spinner(f"Validating {asset_name}..."):
-                is_valid = fetcher.is_asset_valid(asset_type, asset_name)
-            if is_valid:
-                # If the asset is valid, create the dictionary
-                new_asset = {
-                    "Type": asset_type,
-                    "Name": asset_name,
-                    "Amount Invested": amount_invested,
-                    "Purchase Date": purchase_date,
-                    "Investment Type": inv_type 
-                }
-                # Append the asset to the portfolio
-                st.session_state.portfolio.append(new_asset)
-                st.success(f"Added {asset_name} to your portfolio!")
-                st.rerun()
+            st.warning("Please select a valid purchase date.")
+            return
+
+        if not asset_name or amount_invested <= 0:
+            st.warning("Please fill all required fields.")
+            return
+
+        with st.spinner("Validating asset..."):
+            if not fetcher.is_asset_valid(asset_type, asset_name):
+                st.error(f"Invalid {asset_type}: {asset_name}")
+                return
+
+        purchase_nav = None
+        units_owned = None
+
+        # --- Try automatic price fetch for Lumpsum ---
+        if inv_type == "Lumpsum":
+            if asset_type == "Mutual Fund":
+                purchase_nav = fetcher.get_historical_nav(asset_name, purchase_date)
             else:
-                # If the ticker is invalid, show an error and do not add it
-                st.error(f"Invalid {asset_type}: '{asset_name}'. Please provide a valid ticker, e.g., 'RELIANCE.NS'.")
+                df = fetcher.get_stock_data(asset_name, purchase_date)
+                if not df.empty:
+                    purchase_nav = df["Close"].iloc[0]
 
-    st.subheader("Your Current Portfolio")
+        # --- Manual fallback ---
+        if inv_type == "Lumpsum" and purchase_nav is None:
+            st.warning("⚠️ Purchase price/NAV could not be fetched.")
+
+            choice = st.radio(
+                "How would you like to proceed?",
+                ["I know the NAV / Buy Price", "I know the number of units / shares"],
+                horizontal=True,
+            )
+
+            if choice == "I know the NAV / Buy Price":
+                purchase_nav = st.number_input(
+                    "Enter Purchase NAV / Buy Price", min_value=0.01
+                )
+                units_owned = amount_invested / purchase_nav
+            else:
+                units_owned = st.number_input(
+                    "Enter Units / Shares Owned", min_value=0.0001
+                )
+
+        if inv_type == "SIP":
+            st.info(
+                "SIP added without units. Returns will be available once "
+                "transaction-level data is added."
+            )
+
+        new_asset = {
+            "Type": asset_type,
+            "Name": asset_name,
+            "Investment Type": inv_type,
+            "Amount Invested": amount_invested,
+            "Purchase Date": purchase_date,
+            "Purchase NAV": purchase_nav,
+            "Units Owned": units_owned,
+        }
+
+        st.session_state.portfolio.append(new_asset)
+        save_portfolio(st.session_state.portfolio)
+        st.session_state.pop("analysis_results", None)
+
+        st.success(f"Added {asset_name} to portfolio.")
+        st.rerun()
+
+    # ---------------- PORTFOLIO LIST ----------------
+    st.subheader("📂 Your Portfolio")
+
     if not st.session_state.portfolio:
-        st.info("Your portfolio is empty. Add an asset using the form above.")
+        st.info("Portfolio is empty.")
     else:
-        col1, col2, col3, col4, col5, col6 = st.columns([2, 4, 1, 1, 1, 1])
-        col1.write("**Asset Type**")
-        col2.write("**Name**")
-        col3.write("**Amount Invested**")
-        col4.write("**Purchase Date**")
-        col5.write("Lumpsum/SIP")
-        col6.write("**Actions**")
+        for i, asset in reversed(list(enumerate(st.session_state.portfolio))):
+            cols = st.columns([2, 4, 2, 2, 1])
+            cols[0].write(asset["Type"])
+            cols[1].write(asset["Name"])
+            cols[2].write(f"₹{asset['Amount Invested']:,.2f}")
+            cols[3].write(asset["Purchase Date"].strftime("%d-%b-%Y"))
 
-        for i, item in reversed(list(enumerate(st.session_state.portfolio))):
-            col1, col2, col3, col4, col5, col6 = st.columns([2, 4, 1, 1, 1, 1])
-            
-            # Display the investment details
-            col1.text(item["Type"])
-            col2.text(item["Name"])
-            col3.text(f"₹{item['Amount Invested']:,.2f}")
-            col4.text(item["Purchase Date"].strftime("%d-%b-%Y"))
-            col5.text(item.get("Investment Type"))
-            
-            # Create a delete button in the 'Actions' column
-            # A unique key is ESSENTIAL for buttons inside a loop
-            if col6.button("Delete", key=f"delete_{i}"):
-                # If the delete button is clicked, remove the item from the portfolio list
+            if cols[4].button("🗑️", key=f"del_{i}"):
                 st.session_state.portfolio.pop(i)
-                # Rerun the app to immediately show the updated portfolio
+                save_portfolio(st.session_state.portfolio)
+                st.session_state.pop("analysis_results", None)
                 st.rerun()
 
-    # --- The Main Analyze Button ---
+    # ---------------- ANALYSIS ----------------
     if st.session_state.portfolio:
-        if st.button("Analyze Full Portfolio"):
-            with st.spinner("Analyzing full portfolio..."):
-                fetcher = DataFetcher()
+        if st.button("Analyze Portfolio"):
+            with st.spinner("Analyzing portfolio..."):
                 analyzer = PortfolioAnalyzer(fetcher)
-                results = analyzer.analyze_portfolio(st.session_state.portfolio)
-                st.session_state.analysis_results = results
-
-            st.success("Analysis complete!")
+                st.session_state.analysis_results = analyzer.analyze_portfolio(
+                    st.session_state.portfolio
+                )
+            st.success("Analysis complete.")
             st.rerun()
-    
+
     results = st.session_state.get("analysis_results")
     if results:
-        st.subheader("📈 Portfolio Summary")
+        st.subheader("📊 Portfolio Summary")
 
         summary = results["summary"]
-        col1, col2, col3 = st.columns(3)
-
-        col1.metric("Total Investment", f"₹{summary['Total Invested']:,.2f}")
-
-        col2.metric(
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total Invested", f"₹{summary['Total Invested']:,.2f}")
+        c2.metric(
             "Current Value",
             f"₹{summary['Total Current Value']:,.2f}",
             delta=f"₹{summary['Total Gain/Loss']:,.2f}",
         )
+        c3.metric("Portfolio XIRR", f"{summary.get('Portfolio XIRR', 'N/A')}%")
 
-        col3.metric(
-            "Overall Portfolio XIRR",
-            f"{summary.get('Portfolio XIRR', 'N/A')}%",
-        )
+        st.subheader("📄 Detailed View")
+        df = pd.DataFrame(results["details"])
+        st.dataframe(df, use_container_width=True)
 
-        st.subheader("📄 Detailed Breakdown")
-        details_df = pd.DataFrame(results["details"])
-        details_df["error"] = details_df.get("error", None)
 
-        display_cols = [
-            "Type",
-            "Name",
-            "Amount Invested",
-            "Total Invested",
-            "Purchase Price",
-            "Current Price",
-            "Units/Shares",
-            "Current Value",
-            "Gain/Loss",
-            "Percentage Return",
-            "CAGR",
-            "XIRR",
-            "error",
-        ]
-
-        existing_cols = [c for c in display_cols if c in details_df.columns]
-
-        money_cols = [
-            "Amount Invested",
-            "Total Invested",
-            "Purchase Price",
-            "Current Price",
-            "Current Value",
-            "Gain/Loss",
-        ]
-
-        for col in money_cols:
-            if col in details_df.columns:
-                details_df[col] = details_df[col].apply(
-                    lambda x: f"₹{x:,.2f}" if pd.notnull(x) else "N/A"
-                )
-
-        st.dataframe(details_df[existing_cols], use_container_width=True)
-
-    #7. Analysis 
 if __name__ == "__main__":
     main()
