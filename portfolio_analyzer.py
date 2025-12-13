@@ -1,190 +1,142 @@
-# portfolio_analyzer.py
 from datetime import date
-import calendar
 import numpy_financial as npf
-from data_fetcher import DataFetcher
+
 
 class PortfolioAnalyzer:
-    def __init__(self, fetcher: DataFetcher):
+    def __init__(self, fetcher):
         self.fetcher = fetcher
 
-    @staticmethod
-    def last_day_of_month(year, month):
-        return calendar.monthrange(year, month)[1]
-
+    # --------------------------------------------------
+    # Public API
+    # --------------------------------------------------
     def analyze_portfolio(self, portfolio):
-        detailed_results = []
+        analyzed_assets = []
+
         for asset in portfolio:
-            analyzed_asset = self._analyze_single_asset(asset.copy())
-            detailed_results.append(analyzed_asset)
-        
-        summary_results = self.aggregate_portfolio_results(detailed_results)
-        
+            analyzed_assets.append(self._analyze_single_asset(asset.copy()))
+
+        summary = self._aggregate(analyzed_assets)
+
         return {
-            "details": detailed_results,
-            "summary": summary_results
+            "details": analyzed_assets,
+            "summary": summary
         }
 
+    # --------------------------------------------------
+    # Core Logic
+    # --------------------------------------------------
     def _analyze_single_asset(self, asset):
+        asset_type = asset["Type"]
+        name = asset["Name"]
+        inv_type = asset.get("Investment Type", "Lumpsum")
+        amount = asset["Amount Invested"]
         purchase_date = asset["Purchase Date"]
-        purchase_price = None
-        current_price = None
-        
-        if asset["Type"] == "Mutual Fund":
-            purchase_price = self.fetcher.get_historical_nav(asset["Name"], purchase_date)
-            current_price = self.fetcher.get_current_price("Mutual Fund", asset["Name"])
-        
-        elif asset["Type"] == "Stock":
-            purchase_price_df = self.fetcher.get_stock_data(asset["Name"], purchase_date)
-            if not purchase_price_df.empty:
-                purchase_price = purchase_price_df['Close'].iloc[0]
-            current_price = self.fetcher.get_current_price("Stock", asset["Name"])
-        
-        if current_price is None:
-            asset["error"] = "Could not fetch current price/NAV."
-            return asset
-        # For Mutual Funds, allow fallback if historical NAV fails
-        if purchase_price is None and asset["Type"] == "Mutual Fund":
-            asset["Purchase Price"] = None
-            purchase_price = None
-        
-        is_sip = asset["Type"] == "Mutual Fund" and asset.get("Investment Type") == "SIP"
-        
-        if is_sip:
-            number_of_months = (date.today().year - purchase_date.year) * 12 + (date.today().month - purchase_date.month) + 1
-            monthly_investment = asset["Amount Invested"]
-            total_invested = monthly_investment * number_of_months
-            
-            units_or_shares = 0
-            cash_flows = []
-            dates = []
-            all_installments_valid = True
 
-            for i in range(number_of_months):
-                current_month = purchase_date.month + i
-                current_year = purchase_date.year + (current_month - 1) // 12
-                installment_month = (current_month - 1) % 12 + 1
-                day = min(purchase_date.day, self.last_day_of_month(current_year, installment_month))
-                installment_date = date(current_year, installment_month, day)
-                
-                monthly_nav = self.fetcher.get_historical_nav(asset["Name"], installment_date)
-                if monthly_nav:
-                    units_or_shares += monthly_investment / monthly_nav
-                    cash_flows.append(-monthly_investment)
-                    dates.append(installment_date)
-                else:
-                    all_installments_valid = False
-                    continue
-            
-            purchase_price = total_invested / units_or_shares if units_or_shares > 0 else 0
-        
+        units = asset.get("Units Owned")
+        purchase_nav = asset.get("Purchase NAV")
+
+        # ------------------------------
+        # 1. Determine Units (TRUTH)
+        # ------------------------------
+        if units and units > 0:
+            units_owned = units
+
         else:
-            total_invested = asset["Amount Invested"]
-            units_or_shares = (
-                total_invested / purchase_price
-                if purchase_price and purchase_price > 0
-                else None
-            )
-        if units_or_shares is None:
-            if asset["Type"] == "Mutual Fund":
-                asset["Units/Shares"] = 0
-                asset["Purchase Price"] = None
-                asset["error"] = "Historical NAV unavailable; valuation skipped."
-                return asset
+            # Try to compute units if NAV exists
+            if purchase_nav and purchase_nav > 0:
+                units_owned = amount / purchase_nav
+                asset["Units Owned"] = units_owned
+
             else:
-                asset["error"] = "Historical price unavailable for valuation."
+                asset["error"] = "Missing units or purchase NAV"
                 return asset
 
-        current_value = units_or_shares * current_price
-        gain_loss = current_value - total_invested
+        # ------------------------------
+        # 2. Fetch Current Price (NAV)
+        # ------------------------------
+        current_price = self.fetcher.get_current_price(asset_type, name)
 
-        asset["Total Invested"] = total_invested
-        asset["Purchase Price"] = purchase_price
-        asset["Current Price"] = current_price
-        asset["Units/Shares"] = units_or_shares
-        asset["Current Value"] = current_value
-        asset["Gain/Loss"] = gain_loss
-        asset["Percentage Return"] = (gain_loss / total_invested) * 100 if total_invested > 0 else 0
-        
-        
-        if is_sip:
-            if all_installments_valid and current_value > 0:
-                cash_flows.append(current_value)
-                dates.append(date.today())
-                try:
-                    xirr_value = npf.xirr(cash_flows, dates)
-                    asset["XIRR"] = round(xirr_value * 100, 2)
-                except Exception:
-                    asset["XIRR"] = "N/A"
-            else:
-                asset["XIRR"] = "N/A"
-        else: # Lumpsum
-            years_held = (date.today() - purchase_date).days / 365.25
-            if years_held > 0 and total_invested > 0:
-                cagr_value = ((current_value / total_invested) ** (1 / years_held)) - 1
-                asset["CAGR"] = round(cagr_value * 100, 2)
+        if current_price is None or current_price <= 0:
+            asset["error"] = "Current price unavailable"
+            return asset
+
+        # ------------------------------
+        # 3. Valuation
+        # ------------------------------
+        current_value = units_owned * current_price
+        gain_loss = current_value - amount
+
+        asset.update({
+            "Total Invested": amount,
+            "Units/Shares": units_owned,
+            "Current Price": current_price,
+            "Current Value": current_value,
+            "Gain/Loss": gain_loss,
+            "Percentage Return": (gain_loss / amount) * 100 if amount > 0 else 0
+        })
+
+        # ------------------------------
+        # 4. Returns
+        # ------------------------------
+        if inv_type == "Lumpsum":
+            years = (date.today() - purchase_date).days / 365.25
+            if years > 0 and amount > 0:
+                cagr = ((current_value / amount) ** (1 / years)) - 1
+                asset["CAGR"] = round(cagr * 100, 2)
             else:
                 asset["CAGR"] = "N/A"
-        
-        return asset
-    
-    def aggregate_portfolio_results(self, detailed_results):
-        valid_assets = [asset for asset in detailed_results if "error" not in asset]
-        
-        total_invested = sum(asset.get("Total Invested", 0) for asset in valid_assets)
-        total_current_value = sum(asset.get("Current Value", 0) for asset in valid_assets)
-        total_gain_loss = total_current_value - total_invested
-        percentage_return = (total_gain_loss / total_invested) * 100 if total_invested > 0 else 0
 
-        portfolio_xirr = self.calculate_portfolio_xirr(detailed_results)
-        
+        else:
+            # SIP returns not faked
+            asset["XIRR"] = "Requires transaction-level data"
+
+        return asset
+
+    # --------------------------------------------------
+    # Portfolio Aggregation
+    # --------------------------------------------------
+    def _aggregate(self, assets):
+        valid_assets = [a for a in assets if "error" not in a]
+
+        total_invested = sum(a.get("Total Invested", 0) for a in valid_assets)
+        total_current_value = sum(a.get("Current Value", 0) for a in valid_assets)
+        total_gain = total_current_value - total_invested
+
         return {
             "Total Invested": total_invested,
             "Total Current Value": total_current_value,
-            "Total Gain/Loss": total_gain_loss,
-            "Percentage Return": percentage_return,
-            "Portfolio XIRR": portfolio_xirr
+            "Total Gain/Loss": total_gain,
+            "Percentage Return": (
+                (total_gain / total_invested) * 100
+                if total_invested > 0 else 0
+            ),
+            "Portfolio XIRR": self._portfolio_xirr(valid_assets)
         }
-    
-    def calculate_portfolio_xirr(self, detailed_results):
 
+    # --------------------------------------------------
+    # Portfolio XIRR (Lumpsum only – honest)
+    # --------------------------------------------------
+    def _portfolio_xirr(self, assets):
         cash_flows = []
         dates = []
 
-        for asset in detailed_results:
-            if "error" in asset:
-                continue 
+        for asset in assets:
+            if asset.get("Investment Type") != "Lumpsum":
+                continue
 
-            if asset.get("Investment Type") != "SIP":
-                cash_flows.append(-asset["Total Invested"])
-                dates.append(asset["Purchase Date"])
-        
-            else:
-                purchase_date = asset["Purchase Date"]
-                number_of_months = (date.today().year - purchase_date.year) * 12 + (date.today().month - purchase_date.month) + 1
-                monthly_investment = asset["Amount Invested"]
-            
-                for i in range(number_of_months):
-                    current_month = purchase_date.month + i
-                    current_year = purchase_date.year + (current_month - 1) // 12
-                    installment_month = (current_month - 1) % 12 + 1
-                    day = min(purchase_date.day, self.last_day_of_month(current_year, installment_month))
-                    installment_date = date(current_year, installment_month, day)
-                
-                    cash_flows.append(-monthly_investment)
-                    dates.append(installment_date)
+            cash_flows.append(-asset["Total Invested"])
+            dates.append(asset["Purchase Date"])
 
-        total_current_value = sum(asset.get("Current Value", 0) for asset in detailed_results if "error" not in asset)
+        total_value = sum(a["Current Value"] for a in assets if "Current Value" in a)
 
-        if total_current_value > 0:
-            cash_flows.append(total_current_value)
-            dates.append(date.today())
+        if total_value <= 0 or not cash_flows:
+            return "N/A"
+
+        cash_flows.append(total_value)
+        dates.append(date.today())
 
         try:
-            sorted_flows = sorted(zip(dates, cash_flows))
-            sorted_dates, sorted_cash_flows = zip(*sorted_flows)
-            xirr_value = npf.xirr(sorted_cash_flows, sorted_dates)
-            return round(xirr_value * 100, 2) if xirr_value is not None else "N/A"
-        
+            xirr = npf.xirr(cash_flows, dates)
+            return round(xirr * 100, 2)
         except Exception:
             return "N/A"
