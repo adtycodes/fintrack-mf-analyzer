@@ -130,7 +130,7 @@ class DataFetcher:
 
                 scheme_code = None
                 for code, name in self._scheme_codes.items():
-                    if name.lower() == asset_name.lower():
+                    if name.lower().strip() == asset_name.lower().strip():
                         scheme_code = code
                         break
 
