@@ -40,9 +40,13 @@ class PortfolioAnalyzer:
                 purchase_price = purchase_price_df['Close'].iloc[0]
             current_price = self.fetcher.get_current_price("Stock", asset["Name"])
         
-        if purchase_price is None or current_price is None:
-            asset["error"] = "Could not fetch price/NAV data."
+        if current_price is None:
+            asset["error"] = "Could not fetch current price/NAV."
             return asset
+        # For Mutual Funds, allow fallback if historical NAV fails
+        if purchase_price is None and asset["Type"] == "Mutual Fund":
+            asset["Purchase Price"] = None
+            purchase_price = None
         
         is_sip = asset["Type"] == "Mutual Fund" and asset.get("Investment Type") == "SIP"
         
@@ -70,14 +74,27 @@ class PortfolioAnalyzer:
                     dates.append(installment_date)
                 else:
                     all_installments_valid = False
-                    break
+                    continue
             
             purchase_price = total_invested / units_or_shares if units_or_shares > 0 else 0
         
         else:
             total_invested = asset["Amount Invested"]
-            units_or_shares = total_invested / purchase_price
-        
+            units_or_shares = (
+                total_invested / purchase_price
+                if purchase_price and purchase_price > 0
+                else None
+            )
+        if units_or_shares is None:
+            if asset["Type"] == "Mutual Fund":
+                asset["Units/Shares"] = 0
+                asset["Purchase Price"] = None
+                asset["error"] = "Historical NAV unavailable; valuation skipped."
+                return asset
+            else:
+                asset["error"] = "Historical price unavailable for valuation."
+                return asset
+
         current_value = units_or_shares * current_price
         gain_loss = current_value - total_invested
 
@@ -88,6 +105,7 @@ class PortfolioAnalyzer:
         asset["Current Value"] = current_value
         asset["Gain/Loss"] = gain_loss
         asset["Percentage Return"] = (gain_loss / total_invested) * 100 if total_invested > 0 else 0
+        
         
         if is_sip:
             if all_installments_valid and current_value > 0:
@@ -124,7 +142,8 @@ class PortfolioAnalyzer:
             "Total Invested": total_invested,
             "Total Current Value": total_current_value,
             "Total Gain/Loss": total_gain_loss,
-            "Percentage Return": percentage_return
+            "Percentage Return": percentage_return,
+            "Portfolio XIRR": portfolio_xirr
         }
     
     def calculate_portfolio_xirr(self, detailed_results):
