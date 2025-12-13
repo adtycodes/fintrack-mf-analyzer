@@ -117,6 +117,8 @@ class PortfolioAnalyzer:
         total_current_value = sum(asset.get("Current Value", 0) for asset in valid_assets)
         total_gain_loss = total_current_value - total_invested
         percentage_return = (total_gain_loss / total_invested) * 100 if total_invested > 0 else 0
+
+        portfolio_xirr = self.calculate_portfolio_xirr(detailed_results)
         
         return {
             "Total Invested": total_invested,
