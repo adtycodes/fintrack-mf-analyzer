@@ -136,7 +136,14 @@ class DataFetcher:
 
                 if scheme_code:
                     details = self.mf_toolkit.get_scheme_details(scheme_code)
-                    return float(details['nav'])
+                    nav = (
+                        details.get("nav")
+                        or details.get("scheme_nav")
+                        or details.get("last_nav")
+                    )
+                if nav:
+                    return float(nav)
+                self.logger.error(f"NAV not found in scheme details for {asset_name}: {details}")
                 return None
 
             elif asset_type == "Stock":
